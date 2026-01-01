@@ -1,24 +1,32 @@
-import { useState, useEffect } from 'react';
+import React, { memo } from 'react';
 import './Sidebar.css';
 
-export default function Sidebar({
+const Sidebar = memo(function Sidebar({
   conversations,
   currentConversationId,
   onSelectConversation,
-  onNewConversation,
+  onNewConversation
 }) {
+  const formatDate = (dateString) => {
+    const date = new Date(dateString);
+    return date.toLocaleDateString() + ' ' + date.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+  };
+
   return (
     <div className="sidebar">
       <div className="sidebar-header">
-        <h1>LLM Council</h1>
+        <h2>LLM Council</h2>
         <button className="new-conversation-btn" onClick={onNewConversation}>
           + New Conversation
         </button>
       </div>
-
-      <div className="conversation-list">
+      
+      <div className="conversations-list">
         {conversations.length === 0 ? (
-          <div className="no-conversations">No conversations yet</div>
+          <div className="empty-conversations">
+            <p>No conversations yet</p>
+            <p>Create your first conversation to get started</p>
+          </div>
         ) : (
           conversations.map((conv) => (
             <div
@@ -28,11 +36,10 @@ export default function Sidebar({
               }`}
               onClick={() => onSelectConversation(conv.id)}
             >
-              <div className="conversation-title">
-                {conv.title || 'New Conversation'}
-              </div>
+              <div className="conversation-title">{conv.title}</div>
               <div className="conversation-meta">
-                {conv.message_count} messages
+                <span className="message-count">{conv.message_count} messages</span>
+                <span className="conversation-date">{formatDate(conv.created_at)}</span>
               </div>
             </div>
           ))
@@ -40,4 +47,6 @@ export default function Sidebar({
       </div>
     </div>
   );
-}
+});
+
+export default Sidebar;

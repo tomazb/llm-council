@@ -1,36 +1,34 @@
-import { useState } from 'react';
+import React, { memo } from 'react';
 import ReactMarkdown from 'react-markdown';
 import './Stage1.css';
 
-export default function Stage1({ responses }) {
-  const [activeTab, setActiveTab] = useState(0);
-
+const Stage1 = memo(function Stage1({ responses }) {
   if (!responses || responses.length === 0) {
-    return null;
+    return (
+      <div className="stage1">
+        <h3>Stage 1: Individual Responses</h3>
+        <p>No responses available</p>
+      </div>
+    );
   }
 
   return (
-    <div className="stage stage1">
-      <h3 className="stage-title">Stage 1: Individual Responses</h3>
-
-      <div className="tabs">
-        {responses.map((resp, index) => (
-          <button
-            key={index}
-            className={`tab ${activeTab === index ? 'active' : ''}`}
-            onClick={() => setActiveTab(index)}
-          >
-            {resp.model.split('/')[1] || resp.model}
-          </button>
+    <div className="stage1">
+      <h3>Stage 1: Individual Responses</h3>
+      <div className="responses-grid">
+        {responses.map((response, index) => (
+          <div key={index} className="response-card">
+            <div className="response-header">
+              <h4>{response.model}</h4>
+            </div>
+            <div className="response-content">
+              <ReactMarkdown>{response.response}</ReactMarkdown>
+            </div>
+          </div>
         ))}
-      </div>
-
-      <div className="tab-content">
-        <div className="model-name">{responses[activeTab].model}</div>
-        <div className="response-text markdown-content">
-          <ReactMarkdown>{responses[activeTab].response}</ReactMarkdown>
-        </div>
       </div>
     </div>
   );
-}
+});
+
+export default Stage1;

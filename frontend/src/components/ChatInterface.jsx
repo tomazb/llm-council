@@ -1,4 +1,4 @@
-import { useState, useEffect, useRef } from 'react';
+import { useState, useEffect, useRef, useCallback } from 'react';
 import ReactMarkdown from 'react-markdown';
 import Stage1 from './Stage1';
 import Stage2 from './Stage2';
@@ -9,33 +9,63 @@ export default function ChatInterface({
   conversation,
   onSendMessage,
   isLoading,
+  error
 }) {
   const [input, setInput] = useState('');
+  const [isSubmitting, setIsSubmitting] = useState(false);
   const messagesEndRef = useRef(null);
+  const abortControllerRef = useRef(null);
 
-  const scrollToBottom = () => {
+  const scrollToBottom = useCallback(() => {
     messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
-  };
+  }, []);
 
   useEffect(() => {
     scrollToBottom();
-  }, [conversation]);
+  }, [conversation, scrollToBottom]);
 
-  const handleSubmit = (e) => {
+  // Cleanup on unmount
+  useEffect(() => {
+    return () => {
+      if (abortControllerRef.current) {
+        abortControllerRef.current.abort();
+      }
+    };
+  }, []);
+
+  const handleSubmit = useCallback(async (e) => {
     e.preventDefault();
-    if (input.trim() && !isLoading) {
-      onSendMessage(input);
-      setInput('');
+    if (input.trim() && !isLoading && !isSubmitting) {
+      setIsSubmitting(true);
+      try {
+        await onSendMessage(input);
+        setInput('');
+      } finally {
+        setIsSubmitting(false);
+      }
     }
-  };
+  }, [input, isLoading, isSubmitting, onSendMessage]);
 
-  const handleKeyDown = (e) => {
+  const handleKeyDown = useCallback((e) => {
     // Submit on Enter (without Shift)
     if (e.key === 'Enter' && !e.shiftKey) {
       e.preventDefault();
       handleSubmit(e);
     }
-  };
+  }, [handleSubmit]);
+
+  const handleRetry = useCallback(() => {
+    // Retry last message if there was an error
+    if (error && conversation && conversation.messages.length > 0) {
+      const lastUserMessage = conversation.messages
+        .reverse()
+        .find(msg => msg.role === 'user');
+      
+      if (lastUserMessage) {
+        onSendMessage(lastUserMessage.content);
+      }
+    }
+  }, [error, conversation, onSendMessage]);
 
   if (!conversation) {
     return (
@@ -110,6 +140,23 @@ export default function ChatInterface({
           ))
         )}
 
+        {/* Error display */}
+        {error && (
+          <div className="error-message">
+            <div className="error-content">
+              <strong>Error:</strong> {error}
+              <button 
+                className="retry-button" 
+                onClick={handleRetry}
+                disabled={isLoading}
+              >
+                Retry
+              </button>
+            </div>
+          </div>
+        )}
+
+        {/* Loading indicator */}
         {isLoading && (
           <div className="loading-indicator">
             <div className="spinner"></div>
@@ -128,15 +175,15 @@ export default function ChatInterface({
             value={input}
             onChange={(e) => setInput(e.target.value)}
             onKeyDown={handleKeyDown}
-            disabled={isLoading}
+            disabled={isLoading || isSubmitting}
             rows={3}
           />
           <button
             type="submit"
             className="send-button"
-            disabled={!input.trim() || isLoading}
+            disabled={!input.trim() || isLoading || isSubmitting}
           >
-            Send
+            {isSubmitting ? 'Sending...' : 'Send'}
           </button>
         </form>
       )}

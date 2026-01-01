@@ -1,14 +1,136 @@
-import { useState, useEffect } from 'react';
+import { useState, useEffect, useReducer, useCallback, useRef } from 'react';
 import Sidebar from './components/Sidebar';
 import ChatInterface from './components/ChatInterface';
 import { api } from './api';
 import './App.css';
 
+// Action types for state management
+const actionTypes = {
+  SET_CONVERSATIONS: 'SET_CONVERSATIONS',
+  SET_CURRENT_CONVERSATION_ID: 'SET_CURRENT_CONVERSATION_ID',
+  SET_CURRENT_CONVERSATION: 'SET_CURRENT_CONVERSATION',
+  ADD_CONVERSATION: 'ADD_CONVERSATION',
+  SET_LOADING: 'SET_LOADING',
+  UPDATE_MESSAGE_STAGE: 'UPDATE_MESSAGE_STAGE',
+  SET_MESSAGE_LOADING: 'SET_MESSAGE_LOADING',
+  COMPLETE_MESSAGE: 'COMPLETE_MESSAGE',
+  SET_ERROR: 'SET_ERROR',
+  CLEAR_ERROR: 'CLEAR_ERROR'
+};
+
+// Initial state
+const initialState = {
+  conversations: [],
+  currentConversationId: null,
+  currentConversation: null,
+  isLoading: false,
+  error: null
+};
+
+// Reducer function for state management
+function appReducer(state, action) {
+  switch (action.type) {
+    case actionTypes.SET_CONVERSATIONS:
+      return { ...state, conversations: action.payload };
+    
+    case actionTypes.SET_CURRENT_CONVERSATION_ID:
+      return { ...state, currentConversationId: action.payload };
+    
+    case actionTypes.SET_CURRENT_CONVERSATION:
+      return { ...state, currentConversation: action.payload };
+    
+    case actionTypes.ADD_CONVERSATION:
+      return {
+        ...state,
+        conversations: [action.payload, ...state.conversations]
+      };
+    
+    case actionTypes.SET_LOADING:
+      return { ...state, isLoading: action.payload };
+    
+    case actionTypes.UPDATE_MESSAGE_STAGE:
+      const { messageType, stage, data, metadata } = action.payload;
+      const updatedMessages = state.currentConversation.messages.map((msg, index) => {
+        if (index === state.currentConversation.messages.length - 1) {
+          return {
+            ...msg,
+            [stage]: data,
+            ...(metadata && { metadata }),
+            loading: {
+              ...msg.loading,
+              [stage]: false
+            }
+          };
+        }
+        return msg;
+      });
+      return {
+        ...state,
+        currentConversation: {
+          ...state.currentConversation,
+          messages: updatedMessages
+        }
+      };
+    
+    case actionTypes.SET_MESSAGE_LOADING:
+      const { stage: loadingStage } = action.payload;
+      const messagesWithLoading = state.currentConversation.messages.map((msg, index) => {
+        if (index === state.currentConversation.messages.length - 1) {
+          return {
+            ...msg,
+            loading: {
+              ...msg.loading,
+              [loadingStage]: true
+            }
+          };
+        }
+        return msg;
+      });
+      return {
+        ...state,
+        currentConversation: {
+          ...state.currentConversation,
+          messages: messagesWithLoading
+        }
+      };
+    
+    case actionTypes.COMPLETE_MESSAGE:
+      const { stage: completeStage, data: completeData } = action.payload;
+      const completedMessages = state.currentConversation.messages.map((msg, index) => {
+        if (index === state.currentConversation.messages.length - 1) {
+          return {
+            ...msg,
+            [completeStage]: completeData,
+            loading: {
+              ...msg.loading,
+              [completeStage]: false
+            }
+          };
+        }
+        return msg;
+      });
+      return {
+        ...state,
+        currentConversation: {
+          ...state.currentConversation,
+          messages: completedMessages
+        }
+      };
+    
+    case actionTypes.SET_ERROR:
+      return { ...state, error: action.payload };
+    
+    case actionTypes.CLEAR_ERROR:
+      return { ...state, error: null };
+    
+    default:
+      return state;
+  }
+}
+
 function App() {
-  const [conversations, setConversations] = useState([]);
-  const [currentConversationId, setCurrentConversationId] = useState(null);
-  const [currentConversation, setCurrentConversation] = useState(null);
-  const [isLoading, setIsLoading] = useState(false);
+  const [state, dispatch] = useReducer(appReducer, initialState);
+  const abortControllerRef = useRef(null);
 
   // Load conversations on mount
   useEffect(() => {
@@ -17,57 +139,95 @@ function App() {
 
   // Load conversation details when selected
   useEffect(() => {
-    if (currentConversationId) {
-      loadConversation(currentConversationId);
+    if (state.currentConversationId) {
+      loadConversation(state.currentConversationId);
     }
-  }, [currentConversationId]);
+  }, [state.currentConversationId]);
 
-  const loadConversations = async () => {
+  // Cleanup on unmount
+  useEffect(() => {
+    return () => {
+      if (abortControllerRef.current) {
+        abortControllerRef.current.abort();
+      }
+    };
+  }, []);
+
+  const loadConversations = useCallback(async () => {
     try {
       const convs = await api.listConversations();
-      setConversations(convs);
+      dispatch({ type: actionTypes.SET_CONVERSATIONS, payload: convs });
     } catch (error) {
       console.error('Failed to load conversations:', error);
+      dispatch({ 
+        type: actionTypes.SET_ERROR, 
+        payload: error.message || 'Failed to load conversations' 
+      });
     }
-  };
+  }, []);
 
-  const loadConversation = async (id) => {
+  const loadConversation = useCallback(async (id) => {
     try {
       const conv = await api.getConversation(id);
-      setCurrentConversation(conv);
+      dispatch({ type: actionTypes.SET_CURRENT_CONVERSATION, payload: conv });
+      dispatch({ type: actionTypes.CLEAR_ERROR });
     } catch (error) {
       console.error('Failed to load conversation:', error);
+      dispatch({ 
+        type: actionTypes.SET_ERROR, 
+        payload: error.message || 'Failed to load conversation' 
+      });
     }
-  };
+  }, []);
 
-  const handleNewConversation = async () => {
+  const handleNewConversation = useCallback(async () => {
     try {
+      dispatch({ type: actionTypes.CLEAR_ERROR });
       const newConv = await api.createConversation();
-      setConversations([
-        { id: newConv.id, created_at: newConv.created_at, message_count: 0 },
-        ...conversations,
-      ]);
-      setCurrentConversationId(newConv.id);
+      dispatch({
+        type: actionTypes.ADD_CONVERSATION,
+        payload: { 
+          id: newConv.id, 
+          created_at: newConv.created_at, 
+          message_count: 0 
+        }
+      });
+      dispatch({ type: actionTypes.SET_CURRENT_CONVERSATION_ID, payload: newConv.id });
     } catch (error) {
       console.error('Failed to create conversation:', error);
+      dispatch({ 
+        type: actionTypes.SET_ERROR, 
+        payload: error.message || 'Failed to create conversation' 
+      });
     }
-  };
+  }, []);
 
-  const handleSelectConversation = (id) => {
-    setCurrentConversationId(id);
-  };
+  const handleSelectConversation = useCallback((id) => {
+    dispatch({ type: actionTypes.SET_CURRENT_CONVERSATION_ID, payload: id });
+  }, []);
 
-  const handleSendMessage = async (content) => {
-    if (!currentConversationId) return;
+  const handleSendMessage = useCallback(async (content) => {
+    if (!state.currentConversationId || state.isLoading) return;
 
-    setIsLoading(true);
+    // Cancel any existing request
+    if (abortControllerRef.current) {
+      abortControllerRef.current.abort();
+    }
+
+    // Create new abort controller
+    abortControllerRef.current = new AbortController();
+
+    dispatch({ type: actionTypes.SET_LOADING, payload: true });
+    dispatch({ type: actionTypes.CLEAR_ERROR });
+
     try {
       // Optimistically add user message to UI
       const userMessage = { role: 'user', content };
-      setCurrentConversation((prev) => ({
-        ...prev,
-        messages: [...prev.messages, userMessage],
-      }));
+      const updatedConversation = {
+        ...state.currentConversation,
+        messages: [...state.currentConversation.messages, userMessage]
+      };
+      dispatch({ type: actionTypes.SET_CURRENT_CONVERSATION, payload: updatedConversation });
 
       // Create a partial assistant message that will be updated progressively
       const assistantMessage = {
@@ -84,115 +244,115 @@ function App() {
       };
 
       // Add the partial assistant message
-      setCurrentConversation((prev) => ({
-        ...prev,
-        messages: [...prev.messages, assistantMessage],
-      }));
+      const conversationWithAssistant = {
+        ...updatedConversation,
+        messages: [...updatedConversation.messages, assistantMessage]
+      };
+      dispatch({ type: actionTypes.SET_CURRENT_CONVERSATION, payload: conversationWithAssistant });
 
       // Send message with streaming
-      await api.sendMessageStream(currentConversationId, content, (eventType, event) => {
-        switch (eventType) {
-          case 'stage1_start':
-            setCurrentConversation((prev) => {
-              const messages = [...prev.messages];
-              const lastMsg = messages[messages.length - 1];
-              lastMsg.loading.stage1 = true;
-              return { ...prev, messages };
-            });
-            break;
+      await api.sendMessageStream(
+        state.currentConversationId, 
+        content, 
+        (eventType, event) => {
+          switch (eventType) {
+            case 'stage1_start':
+              dispatch({ type: actionTypes.SET_MESSAGE_LOADING, payload: { stage: 'stage1' } });
+              break;
 
-          case 'stage1_complete':
-            setCurrentConversation((prev) => {
-              const messages = [...prev.messages];
-              const lastMsg = messages[messages.length - 1];
-              lastMsg.stage1 = event.data;
-              lastMsg.loading.stage1 = false;
-              return { ...prev, messages };
-            });
-            break;
+            case 'stage1_complete':
+              dispatch({ 
+                type: actionTypes.UPDATE_MESSAGE_STAGE, 
+                payload: { messageType: 'assistant', stage: 'stage1', data: event.data } 
+              });
+              break;
 
-          case 'stage2_start':
-            setCurrentConversation((prev) => {
-              const messages = [...prev.messages];
-              const lastMsg = messages[messages.length - 1];
-              lastMsg.loading.stage2 = true;
-              return { ...prev, messages };
-            });
-            break;
+            case 'stage2_start':
+              dispatch({ type: actionTypes.SET_MESSAGE_LOADING, payload: { stage: 'stage2' } });
+              break;
 
-          case 'stage2_complete':
-            setCurrentConversation((prev) => {
-              const messages = [...prev.messages];
-              const lastMsg = messages[messages.length - 1];
-              lastMsg.stage2 = event.data;
-              lastMsg.metadata = event.metadata;
-              lastMsg.loading.stage2 = false;
-              return { ...prev, messages };
-            });
-            break;
+            case 'stage2_complete':
+              dispatch({ 
+                type: actionTypes.UPDATE_MESSAGE_STAGE, 
+                payload: { 
+                  messageType: 'assistant', 
+                  stage: 'stage2', 
+                  data: event.data, 
+                  metadata: event.metadata 
+                } 
+              });
+              break;
 
-          case 'stage3_start':
-            setCurrentConversation((prev) => {
-              const messages = [...prev.messages];
-              const lastMsg = messages[messages.length - 1];
-              lastMsg.loading.stage3 = true;
-              return { ...prev, messages };
-            });
-            break;
+            case 'stage3_start':
+              dispatch({ type: actionTypes.SET_MESSAGE_LOADING, payload: { stage: 'stage3' } });
+              break;
 
-          case 'stage3_complete':
-            setCurrentConversation((prev) => {
-              const messages = [...prev.messages];
-              const lastMsg = messages[messages.length - 1];
-              lastMsg.stage3 = event.data;
-              lastMsg.loading.stage3 = false;
-              return { ...prev, messages };
-            });
-            break;
+            case 'stage3_complete':
+              dispatch({ 
+                type: actionTypes.UPDATE_MESSAGE_STAGE, 
+                payload: { messageType: 'assistant', stage: 'stage3', data: event.data } 
+              });
+              break;
 
-          case 'title_complete':
-            // Reload conversations to get updated title
-            loadConversations();
-            break;
+            case 'title_complete':
+              // Reload conversations to get updated title
+              loadConversations();
+              break;
 
-          case 'complete':
-            // Stream complete, reload conversations list
-            loadConversations();
-            setIsLoading(false);
-            break;
+            case 'complete':
+              // Stream complete, reload conversations list
+              loadConversations();
+              dispatch({ type: actionTypes.SET_LOADING, payload: false });
+              break;
 
-          case 'error':
-            console.error('Stream error:', event.message);
-            setIsLoading(false);
-            break;
+            case 'error':
+              console.error('Stream error:', event.message);
+              dispatch({ type: actionTypes.SET_ERROR, payload: event.message });
+              dispatch({ type: actionTypes.SET_LOADING, payload: false });
+              break;
 
-          default:
-            console.log('Unknown event type:', eventType);
-        }
-      });
+            default:
+              console.log('Unknown event type:', eventType);
+          }
+        },
+        abortControllerRef.current.signal
+      );
     } catch (error) {
       console.error('Failed to send message:', error);
-      // Remove optimistic messages on error
-      setCurrentConversation((prev) => ({
-        ...prev,
-        messages: prev.messages.slice(0, -2),
-      }));
-      setIsLoading(false);
+      
+      // Don't show error for aborted requests
+      if (error.name !== 'AbortError') {
+        // Remove optimistic messages on error
+        const revertedConversation = {
+          ...state.currentConversation,
+          messages: state.currentConversation.messages.slice(0, -2)
+        };
+        dispatch({ type: actionTypes.SET_CURRENT_CONVERSATION, payload: revertedConversation });
+        dispatch({ 
+          type: actionTypes.SET_ERROR, 
+          payload: error.message || 'Failed to send message' 
+        });
+      }
+      
+      dispatch({ type: actionTypes.SET_LOADING, payload: false });
+    } finally {
+      abortControllerRef.current = null;
     }
-  };
+  }, [state.currentConversationId, state.currentConversation, state.isLoading, loadConversations]);
 
   return (
     <div className="app">
       <Sidebar
-        conversations={conversations}
-        currentConversationId={currentConversationId}
+        conversations={state.conversations}
+        currentConversationId={state.currentConversationId}
         onSelectConversation={handleSelectConversation}
         onNewConversation={handleNewConversation}
       />
       <ChatInterface
-        conversation={currentConversation}
+        conversation={state.currentConversation}
         onSendMessage={handleSendMessage}
-        isLoading={isLoading}
+        isLoading={state.isLoading}
+        error={state.error}
       />
     </div>
   );
