@@ -211,7 +211,11 @@ export const api = {
               const data = line.slice(6).trim();
               if (data) {
                 try {
-                  const event: StreamEvent = JSON.parse(data);
+                  const parsed = JSON.parse(data);
+                  if (!parsed.type || typeof parsed.type !== 'string') {
+                    throw new Error('Invalid event: missing or invalid type field');
+                  }
+                  const event: StreamEvent = parsed;
                   onEvent(event.type, event);
                 } catch (e) {
                   console.error('Failed to parse SSE event:', e, 'Data:', data);
