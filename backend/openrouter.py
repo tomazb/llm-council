@@ -1,8 +1,16 @@
 """OpenRouter API client for making LLM requests."""
 
 import httpx
+import logging
 from typing import List, Dict, Any, Optional
 from .config import OPENROUTER_API_KEY, OPENROUTER_API_URL
+
+logger = logging.getLogger(__name__)
+
+
+class OpenRouterError(Exception):
+    """Custom exception for OpenRouter API errors."""
+    pass
 
 
 async def query_model(
@@ -21,6 +29,10 @@ async def query_model(
     Returns:
         Response dict with 'content' and optional 'reasoning_details', or None if failed
     """
+    if not OPENROUTER_API_KEY:
+        logger.error("OpenRouter API key not configured")
+        raise OpenRouterError("API key not configured")
+
     headers = {
         "Authorization": f"Bearer {OPENROUTER_API_KEY}",
         "Content-Type": "application/json",
@@ -48,8 +60,20 @@ async def query_model(
                 'reasoning_details': message.get('reasoning_details')
             }
 
+    except httpx.HTTPStatusError as e:
+        logger.error(f"HTTP error querying model {model}: {e.response.status_code} - {e.response.text}")
+        return None
+    except httpx.TimeoutException:
+        logger.error(f"Timeout querying model {model} after {timeout}s")
+        return None
+    except httpx.RequestError as e:
+        logger.error(f"Request error querying model {model}: {e}")
+        return None
+    except (KeyError, IndexError) as e:
+        logger.error(f"Invalid response format from model {model}: {e}")
+        return None
     except Exception as e:
-        print(f"Error querying model {model}: {e}")
+        logger.error(f"Unexpected error querying model {model}: {e}")
         return None
 
 
@@ -73,7 +97,15 @@ async def query_models_parallel(
     tasks = [query_model(model, messages) for model in models]
 
     # Wait for all to complete
-    responses = await asyncio.gather(*tasks)
+    responses = await asyncio.gather(*tasks, return_exceptions=True)
 
-    # Map models to their responses
-    return {model: response for model, response in zip(models, responses)}
+    # Map models to their responses, handle exceptions
+    result = {}
+    for model, response in zip(models, responses):
+        if isinstance(response, Exception):
+            logger.error(f"Exception in parallel query for {model}: {response}")
+            result[model] = None
+        else:
+            result[model] = response
+
+    return result
