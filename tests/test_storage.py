@@ -10,17 +10,13 @@ from backend.config import settings
 
 
 @pytest.fixture
-async def temp_data_dir():
+async def temp_data_dir(monkeypatch):
     """Create a temporary data directory for testing."""
     with tempfile.TemporaryDirectory() as temp_dir:
-        # Override settings data dir
-        original_data_dir = settings.data_dir
-        settings.data_dir = temp_dir
+        # Override settings data dir using monkeypatch
+        monkeypatch.setattr(settings, "data_dir", temp_dir)
         
         yield temp_dir
-        
-        # Restore original data dir
-        settings.data_dir = original_data_dir
 
 
 @pytest.mark.asyncio
