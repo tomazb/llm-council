@@ -1,14 +1,18 @@
-"""JSON-based storage for conversations."""
+"""Async JSON-based storage for conversations."""
 
 import json
 import os
+import logging
 from datetime import datetime
 from typing import List, Dict, Any, Optional
 from pathlib import Path
+import aiofiles
 from .config import DATA_DIR
 
+logger = logging.getLogger(__name__)
 
-def ensure_data_dir():
+
+async def ensure_data_dir():
     """Ensure the data directory exists."""
     Path(DATA_DIR).mkdir(parents=True, exist_ok=True)
 
@@ -18,7 +22,16 @@ def get_conversation_path(conversation_id: str) -> str:
     return os.path.join(DATA_DIR, f"{conversation_id}.json")
 
 
-def create_conversation(conversation_id: str) -> Dict[str, Any]:
+def validate_conversation_id(conversation_id: str) -> bool:
+    """Validate conversation ID to prevent directory traversal."""
+    if not conversation_id or not isinstance(conversation_id, str):
+        return False
+    # Basic validation: allow only alphanumeric, hyphens, and underscores
+    import re
+    return bool(re.match(r'^[a-zA-Z0-9_-]+$', conversation_id))
+
+
+async def create_conversation(conversation_id: str) -> Dict[str, Any]:
     """
     Create a new conversation.
 
@@ -28,7 +41,10 @@ def create_conversation(conversation_id: str) -> Dict[str, Any]:
     Returns:
         New conversation dict
     """
-    ensure_data_dir()
+    if not validate_conversation_id(conversation_id):
+        raise ValueError(f"Invalid conversation ID: {conversation_id}")
+
+    await ensure_data_dir()
 
     conversation = {
         "id": conversation_id,
@@ -39,13 +55,17 @@ def create_conversation(conversation_id: str) -> Dict[str, Any]:
 
     # Save to file
     path = get_conversation_path(conversation_id)
-    with open(path, 'w') as f:
-        json.dump(conversation, f, indent=2)
+    try:
+        async with aiofiles.open(path, 'w') as f:
+            await f.write(json.dumps(conversation, indent=2))
+    except OSError as e:
+        logger.error(f"Failed to create conversation {conversation_id}: {e}")
+        raise
 
     return conversation
 
 
-def get_conversation(conversation_id: str) -> Optional[Dict[str, Any]]:
+async def get_conversation(conversation_id: str) -> Optional[Dict[str, Any]]:
     """
     Load a conversation from storage.
 
@@ -55,51 +75,75 @@ def get_conversation(conversation_id: str) -> Optional[Dict[str, Any]]:
     Returns:
         Conversation dict or None if not found
     """
+    if not validate_conversation_id(conversation_id):
+        return None
+
     path = get_conversation_path(conversation_id)
 
     if not os.path.exists(path):
         return None
 
-    with open(path, 'r') as f:
-        return json.load(f)
+    try:
+        async with aiofiles.open(path, 'r') as f:
+            content = await f.read()
+            return json.loads(content)
+    except (OSError, json.JSONDecodeError) as e:
+        logger.error(f"Failed to load conversation {conversation_id}: {e}")
+        return None
 
 
-def save_conversation(conversation: Dict[str, Any]):
+async def save_conversation(conversation: Dict[str, Any]):
     """
     Save a conversation to storage.
 
     Args:
         conversation: Conversation dict to save
     """
-    ensure_data_dir()
+    if not validate_conversation_id(conversation.get('id', '')):
+        raise ValueError(f"Invalid conversation ID: {conversation.get('id')}")
+
+    await ensure_data_dir()
 
     path = get_conversation_path(conversation['id'])
-    with open(path, 'w') as f:
-        json.dump(conversation, f, indent=2)
+    try:
+        async with aiofiles.open(path, 'w') as f:
+            await f.write(json.dumps(conversation, indent=2))
+    except OSError as e:
+        logger.error(f"Failed to save conversation {conversation['id']}: {e}")
+        raise
 
 
-def list_conversations() -> List[Dict[str, Any]]:
+async def list_conversations() -> List[Dict[str, Any]]:
     """
     List all conversations (metadata only).
 
     Returns:
         List of conversation metadata dicts
     """
-    ensure_data_dir()
+    await ensure_data_dir()
 
     conversations = []
-    for filename in os.listdir(DATA_DIR):
-        if filename.endswith('.json'):
-            path = os.path.join(DATA_DIR, filename)
-            with open(path, 'r') as f:
-                data = json.load(f)
-                # Return metadata only
-                conversations.append({
-                    "id": data["id"],
-                    "created_at": data["created_at"],
-                    "title": data.get("title", "New Conversation"),
-                    "message_count": len(data["messages"])
-                })
+    try:
+        for filename in os.listdir(DATA_DIR):
+            if filename.endswith('.json'):
+                path = os.path.join(DATA_DIR, filename)
+                try:
+                    async with aiofiles.open(path, 'r') as f:
+                        content = await f.read()
+                        data = json.loads(content)
+                        # Return metadata only
+                        conversations.append({
+                            "id": data["id"],
+                            "created_at": data["created_at"],
+                            "title": data.get("title", "New Conversation"),
+                            "message_count": len(data["messages"])
+                        })
+                except (OSError, json.JSONDecodeError, KeyError) as e:
+                    logger.warning(f"Failed to read conversation file {filename}: {e}")
+                    continue
+    except OSError as e:
+        logger.error(f"Failed to list conversations: {e}")
+        return []
 
     # Sort by creation time, newest first
     conversations.sort(key=lambda x: x["created_at"], reverse=True)
@@ -107,7 +151,7 @@ def list_conversations() -> List[Dict[str, Any]]:
     return conversations
 
 
-def add_user_message(conversation_id: str, content: str):
+async def add_user_message(conversation_id: str, content: str):
     """
     Add a user message to a conversation.
 
@@ -115,7 +159,10 @@ def add_user_message(conversation_id: str, content: str):
         conversation_id: Conversation identifier
         content: User message content
     """
-    conversation = get_conversation(conversation_id)
+    if not content or not isinstance(content, str):
+        raise ValueError("Message content must be a non-empty string")
+
+    conversation = await get_conversation(conversation_id)
     if conversation is None:
         raise ValueError(f"Conversation {conversation_id} not found")
 
@@ -124,10 +171,10 @@ def add_user_message(conversation_id: str, content: str):
         "content": content
     })
 
-    save_conversation(conversation)
+    await save_conversation(conversation)
 
 
-def add_assistant_message(
+async def add_assistant_message(
     conversation_id: str,
     stage1: List[Dict[str, Any]],
     stage2: List[Dict[str, Any]],
@@ -142,7 +189,7 @@ def add_assistant_message(
         stage2: List of model rankings
         stage3: Final synthesized response
     """
-    conversation = get_conversation(conversation_id)
+    conversation = await get_conversation(conversation_id)
     if conversation is None:
         raise ValueError(f"Conversation {conversation_id} not found")
 
@@ -153,10 +200,10 @@ def add_assistant_message(
         "stage3": stage3
     })
 
-    save_conversation(conversation)
+    await save_conversation(conversation)
 
 
-def update_conversation_title(conversation_id: str, title: str):
+async def update_conversation_title(conversation_id: str, title: str):
     """
     Update the title of a conversation.
 
@@ -164,9 +211,12 @@ def update_conversation_title(conversation_id: str, title: str):
         conversation_id: Conversation identifier
         title: New title for the conversation
     """
-    conversation = get_conversation(conversation_id)
+    if not title or not isinstance(title, str):
+        raise ValueError("Title must be a non-empty string")
+
+    conversation = await get_conversation(conversation_id)
     if conversation is None:
         raise ValueError(f"Conversation {conversation_id} not found")
 
-    conversation["title"] = title
-    save_conversation(conversation)
+    conversation["title"] = title.strip()
+    await save_conversation(conversation)
