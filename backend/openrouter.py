@@ -71,11 +71,18 @@ async def query_model(
         "messages": messages,
     }
 
-    client = await get_http_client()
-    
-    # Override timeout if provided
+    # Use global client with default timeout, or create temporary client with custom timeout
     if timeout is not None:
-        client = httpx.AsyncClient(timeout=timeout)
+        # Create temporary client with custom timeout and same pooling settings
+        client = httpx.AsyncClient(
+            timeout=httpx.Timeout(timeout),
+            limits=httpx.Limits(max_keepalive_connections=20, max_connections=100),
+            http2=True
+        )
+        should_close_client = True
+    else:
+        client = await get_http_client()
+        should_close_client = False
 
     try:
         response = await client.post(
@@ -111,8 +118,8 @@ async def query_model(
         logger.error(f"Unexpected error querying model {model}: {e}")
         return None
     finally:
-        # Close temporary client if timeout was overridden
-        if timeout is not None:
+        # Close temporary client if it was created for custom timeout
+        if should_close_client:
             await client.aclose()
 
 
