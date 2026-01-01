@@ -14,8 +14,9 @@ from slowapi.util import get_remote_address
 from slowapi.errors import RateLimitExceeded
 
 from . import storage
-from .council import run_full_council, generate_conversation_title, stage1_collect_responses, stage2_collect_rankings, stage3_synthesize_final, calculate_aggregate_rankings
+from .council import run_full_council, generate_conversation_title
 from .config import settings
+from .types import Conversation, ConversationMetadata, CouncilResults, StreamEvent
 
 # Configure logging
 logging.basicConfig(
@@ -51,41 +52,34 @@ class SendMessageRequest(BaseModel):
     content: str = Field(..., min_length=1, max_length=10000, description="Message content")
 
 
-class ConversationMetadata(BaseModel):
-    """Conversation metadata for list view."""
-    id: str
-    created_at: str
-    title: str
-    message_count: int
-
-
-class Conversation(BaseModel):
-    """Full conversation with all messages."""
-    id: str
-    created_at: str
-    title: str
-    messages: List[Dict[str, Any]]
+class HealthResponse(BaseModel):
+    """Health check response."""
+    status: str
+    storage: str
+    service: str
+    models_count: int
+    rate_limit: str
 
 
 @app.get("/")
-async def root():
+async def root() -> Dict[str, str]:
     """Health check endpoint."""
     return {"status": "ok", "service": "LLM Council API"}
 
 
-@app.get("/api/health")
-async def health_check():
+@app.get("/api/health", response_model=HealthResponse)
+async def health_check() -> HealthResponse:
     """Detailed health check endpoint."""
     try:
         # Test storage
         await storage.ensure_data_dir()
-        return {
-            "status": "healthy", 
-            "storage": "ok", 
-            "service": "LLM Council API",
-            "models_count": len(settings.council_models),
-            "rate_limit": f"{settings.rate_limit_requests}/{settings.rate_limit_window}s"
-        }
+        return HealthResponse(
+            status="healthy",
+            storage="ok",
+            service="LLM Council API",
+            models_count=len(settings.council_models),
+            rate_limit=f"{settings.rate_limit_requests}/{settings.rate_limit_window}s"
+        )
     except Exception as e:
         logger.error(f"Health check failed: {e}")
         raise HTTPException(status_code=503, detail="Service unavailable")
@@ -93,7 +87,7 @@ async def health_check():
 
 @app.get("/api/conversations", response_model=List[ConversationMetadata])
 @limiter.limit(f"{settings.rate_limit_requests}/{settings.rate_limit_window}s")
-async def list_conversations(request: Request):
+async def list_conversations(request: Request) -> List[ConversationMetadata]:
     """List all conversations (metadata only)."""
     try:
         return await storage.list_conversations()
@@ -104,7 +98,10 @@ async def list_conversations(request: Request):
 
 @app.post("/api/conversations", response_model=Conversation)
 @limiter.limit(f"{settings.rate_limit_requests}/{settings.rate_limit_window}s")
-async def create_conversation(request: Request, create_request: CreateConversationRequest):
+async def create_conversation(
+    request: Request, 
+    create_request: CreateConversationRequest
+) -> Conversation:
     """Create a new conversation."""
     try:
         conversation_id = str(uuid.uuid4())
@@ -118,7 +115,7 @@ async def create_conversation(request: Request, create_request: CreateConversati
 
 @app.get("/api/conversations/{conversation_id}", response_model=Conversation)
 @limiter.limit(f"{settings.rate_limit_requests}/{settings.rate_limit_window}s")
-async def get_conversation(request: Request, conversation_id: str):
+async def get_conversation(request: Request, conversation_id: str) -> Conversation:
     """Get a specific conversation with all its messages."""
     try:
         conversation = await storage.get_conversation(conversation_id)
@@ -132,9 +129,13 @@ async def get_conversation(request: Request, conversation_id: str):
         raise HTTPException(status_code=500, detail="Failed to get conversation")
 
 
-@app.post("/api/conversations/{conversation_id}/message")
+@app.post("/api/conversations/{conversation_id}/message", response_model=CouncilResults)
 @limiter.limit(f"{settings.rate_limit_requests}/{settings.rate_limit_window}s")
-async def send_message(request: Request, conversation_id: str, message_request: SendMessageRequest):
+async def send_message(
+    request: Request, 
+    conversation_id: str, 
+    message_request: SendMessageRequest
+) -> CouncilResults:
     """
     Send a message and run the 3-stage council process.
     Returns the complete response with all stages.
@@ -172,12 +173,12 @@ async def send_message(request: Request, conversation_id: str, message_request: 
         logger.info(f"Processed message for conversation {conversation_id}")
         
         # Return the complete response with metadata
-        return {
-            "stage1": stage1_results,
-            "stage2": stage2_results,
-            "stage3": stage3_result,
-            "metadata": metadata
-        }
+        return CouncilResults(
+            stage1=stage1_results,
+            stage2=stage2_results,
+            stage3=stage3_result,
+            metadata=metadata
+        )
 
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))
@@ -188,7 +189,11 @@ async def send_message(request: Request, conversation_id: str, message_request: 
 
 @app.post("/api/conversations/{conversation_id}/message/stream")
 @limiter.limit(f"{settings.rate_limit_requests}/{settings.rate_limit_window}s")
-async def send_message_stream(request: Request, conversation_id: str, message_request: SendMessageRequest):
+async def send_message_stream(
+    request: Request, 
+    conversation_id: str, 
+    message_request: SendMessageRequest
+) -> StreamingResponse:
     """
     Send a message and stream the 3-stage council process.
     Returns Server-Sent Events as each stage completes.
@@ -210,22 +215,31 @@ async def send_message_stream(request: Request, conversation_id: str, message_re
                 # Start title generation in parallel (don't await yet)
                 title_task = None
                 if is_first_message:
-                    title_task = asyncio.create_task(generate_conversation_title(message_request.content))
+                    title_task = asyncio.create_task(
+                        generate_conversation_title(message_request.content)
+                    )
 
                 # Stage 1: Collect responses
                 yield f"data: {json.dumps({'type': 'stage1_start'})}\n\n"
+                from .council import stage1_collect_responses
                 stage1_results = await stage1_collect_responses(message_request.content)
                 yield f"data: {json.dumps({'type': 'stage1_complete', 'data': stage1_results})}\n\n"
 
                 # Stage 2: Collect rankings
                 yield f"data: {json.dumps({'type': 'stage2_start'})}\n\n"
-                stage2_results, label_to_model = await stage2_collect_rankings(message_request.content, stage1_results)
+                from .council import stage2_collect_rankings, calculate_aggregate_rankings
+                stage2_results, label_to_model = await stage2_collect_rankings(
+                    message_request.content, stage1_results
+                )
                 aggregate_rankings = calculate_aggregate_rankings(stage2_results, label_to_model)
                 yield f"data: {json.dumps({'type': 'stage2_complete', 'data': stage2_results, 'metadata': {'label_to_model': label_to_model, 'aggregate_rankings': aggregate_rankings}})}\n\n"
 
                 # Stage 3: Synthesize final answer
                 yield f"data: {json.dumps({'type': 'stage3_start'})}\n\n"
-                stage3_result = await stage3_synthesize_final(message_request.content, stage1_results, stage2_results)
+                from .council import stage3_synthesize_final
+                stage3_result = await stage3_synthesize_final(
+                    message_request.content, stage1_results, stage2_results
+                )
                 yield f"data: {json.dumps({'type': 'stage3_complete', 'data': stage3_result})}\n\n"
 
                 # Wait for title generation if it was started

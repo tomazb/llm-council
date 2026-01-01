@@ -7,19 +7,20 @@ from datetime import datetime
 from typing import List, Dict, Any, Optional
 from pathlib import Path
 import aiofiles
-from .config import DATA_DIR
+from .config import settings
+from .types import Conversation, ConversationMetadata, Message
 
 logger = logging.getLogger(__name__)
 
 
-async def ensure_data_dir():
+async def ensure_data_dir() -> None:
     """Ensure the data directory exists."""
-    Path(DATA_DIR).mkdir(parents=True, exist_ok=True)
+    Path(settings.data_dir).mkdir(parents=True, exist_ok=True)
 
 
 def get_conversation_path(conversation_id: str) -> str:
     """Get the file path for a conversation."""
-    return os.path.join(DATA_DIR, f"{conversation_id}.json")
+    return os.path.join(settings.data_dir, f"{conversation_id}.json")
 
 
 def validate_conversation_id(conversation_id: str) -> bool:
@@ -31,7 +32,7 @@ def validate_conversation_id(conversation_id: str) -> bool:
     return bool(re.match(r'^[a-zA-Z0-9_-]+$', conversation_id))
 
 
-async def create_conversation(conversation_id: str) -> Dict[str, Any]:
+async def create_conversation(conversation_id: str) -> Conversation:
     """
     Create a new conversation.
 
@@ -46,7 +47,7 @@ async def create_conversation(conversation_id: str) -> Dict[str, Any]:
 
     await ensure_data_dir()
 
-    conversation = {
+    conversation: Conversation = {
         "id": conversation_id,
         "created_at": datetime.utcnow().isoformat(),
         "title": "New Conversation",
@@ -65,7 +66,7 @@ async def create_conversation(conversation_id: str) -> Dict[str, Any]:
     return conversation
 
 
-async def get_conversation(conversation_id: str) -> Optional[Dict[str, Any]]:
+async def get_conversation(conversation_id: str) -> Optional[Conversation]:
     """
     Load a conversation from storage.
 
@@ -92,7 +93,7 @@ async def get_conversation(conversation_id: str) -> Optional[Dict[str, Any]]:
         return None
 
 
-async def save_conversation(conversation: Dict[str, Any]):
+async def save_conversation(conversation: Conversation) -> None:
     """
     Save a conversation to storage.
 
@@ -113,7 +114,7 @@ async def save_conversation(conversation: Dict[str, Any]):
         raise
 
 
-async def list_conversations() -> List[Dict[str, Any]]:
+async def list_conversations() -> List[ConversationMetadata]:
     """
     List all conversations (metadata only).
 
@@ -122,15 +123,15 @@ async def list_conversations() -> List[Dict[str, Any]]:
     """
     await ensure_data_dir()
 
-    conversations = []
+    conversations: List[ConversationMetadata] = []
     try:
-        for filename in os.listdir(DATA_DIR):
+        for filename in os.listdir(settings.data_dir):
             if filename.endswith('.json'):
-                path = os.path.join(DATA_DIR, filename)
+                path = os.path.join(settings.data_dir, filename)
                 try:
                     async with aiofiles.open(path, 'r') as f:
                         content = await f.read()
-                        data = json.loads(content)
+                        data: Conversation = json.loads(content)
                         # Return metadata only
                         conversations.append({
                             "id": data["id"],
@@ -151,7 +152,7 @@ async def list_conversations() -> List[Dict[str, Any]]:
     return conversations
 
 
-async def add_user_message(conversation_id: str, content: str):
+async def add_user_message(conversation_id: str, content: str) -> None:
     """
     Add a user message to a conversation.
 
@@ -166,11 +167,17 @@ async def add_user_message(conversation_id: str, content: str):
     if conversation is None:
         raise ValueError(f"Conversation {conversation_id} not found")
 
-    conversation["messages"].append({
+    user_message: Message = {
         "role": "user",
-        "content": content
-    })
+        "content": content,
+        "stage1": None,
+        "stage2": None,
+        "stage3": None,
+        "metadata": None,
+        "loading": None
+    }
 
+    conversation["messages"].append(user_message)
     await save_conversation(conversation)
 
 
@@ -179,7 +186,7 @@ async def add_assistant_message(
     stage1: List[Dict[str, Any]],
     stage2: List[Dict[str, Any]],
     stage3: Dict[str, Any]
-):
+) -> None:
     """
     Add an assistant message with all 3 stages to a conversation.
 
@@ -193,17 +200,21 @@ async def add_assistant_message(
     if conversation is None:
         raise ValueError(f"Conversation {conversation_id} not found")
 
-    conversation["messages"].append({
+    assistant_message: Message = {
         "role": "assistant",
+        "content": None,
         "stage1": stage1,
         "stage2": stage2,
-        "stage3": stage3
-    })
+        "stage3": stage3,
+        "metadata": None,
+        "loading": None
+    }
 
+    conversation["messages"].append(assistant_message)
     await save_conversation(conversation)
 
 
-async def update_conversation_title(conversation_id: str, title: str):
+async def update_conversation_title(conversation_id: str, title: str) -> None:
     """
     Update the title of a conversation.
 
